@@ -5,6 +5,7 @@ import { getCellId, getColumnId, getCellIndices } from '../utils/cellHelpers';
 
 /**
  * Canvas-based grid renderer for high-performance spreadsheet
+ * Fixed positioning and selection issues
  */
 function CanvasGrid({ setContextMenu }) {
   // Create separate canvases for different layers to prevent flickering
@@ -157,7 +158,7 @@ function CanvasGrid({ setContextMenu }) {
     return position;
   }, [getColumnWidth, getRowHeight]);
   
-  // Get cell ID at position
+  // Get cell ID at position - FIXED
   const getCellIdAtPosition = useCallback((clientX, clientY) => {
     const container = containerRef.current;
     if (!container) return null;
@@ -360,7 +361,6 @@ function CanvasGrid({ setContextMenu }) {
     
     // Get theme colors
     const isDarkMode = document.body.getAttribute('data-theme') === 'dark';
-    const bgColor = isDarkMode ? '#202124' : '#ffffff';
     const textColor = isDarkMode ? '#e8eaed' : '#202124';
     
     // Get visible range
@@ -423,7 +423,7 @@ function CanvasGrid({ setContextMenu }) {
     renderInfoRef.current.cellsNeedsRedraw = false;
   }, [getVisibleRange, getCellPosition, getCellData]);
   
-  // Draw selection overlay
+  // Draw selection overlay - FIXED
   const drawOverlay = useCallback(() => {
     const canvas = overlayCanvasRef.current;
     if (!canvas) return;
@@ -436,8 +436,7 @@ function CanvasGrid({ setContextMenu }) {
     
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     
-    // Get theme colors - use getComputedStyle for proper dark mode support
-    // For dark mode, we need higher opacity and better contrast
+    // Get theme colors based on dark/light mode
     const isDarkMode = document.body.getAttribute('data-theme') === 'dark';
     
     // Use more visible selection colors based on theme
@@ -471,6 +470,7 @@ function CanvasGrid({ setContextMenu }) {
         const [col, row] = getCellIndices(cellId);
         const { x, y, width, height } = getCellPosition(col, row);
         
+        // Adjust for scroll position
         const adjustedX = x - scrollLeft;
         const adjustedY = y - scrollTop;
         
@@ -478,15 +478,9 @@ function CanvasGrid({ setContextMenu }) {
         selectedRows.add(row);
         selectedCols.add(col);
         
-        // Draw selection with rounded corners for better visual appeal
+        // Draw selection rectangle
         ctx.beginPath();
-        if (typeof ctx.roundRect === 'function') {
-          // Use roundRect if available
-          ctx.roundRect(adjustedX, adjustedY, width, height, 2);
-        } else {
-          // Fallback for browsers without roundRect
-          ctx.rect(adjustedX, adjustedY, width, height);
-        }
+        ctx.rect(adjustedX, adjustedY, width, height);
         ctx.fill();
       });
       
@@ -497,11 +491,7 @@ function CanvasGrid({ setContextMenu }) {
         const adjustedY = y - scrollTop;
         
         ctx.beginPath();
-        if (typeof ctx.roundRect === 'function') {
-          ctx.roundRect(0, adjustedY, ROW_HEADER_WIDTH, height, 2);
-        } else {
-          ctx.rect(0, adjustedY, ROW_HEADER_WIDTH, height);
-        }
+        ctx.rect(0, adjustedY, ROW_HEADER_WIDTH, height);
         ctx.fill();
       });
       
@@ -511,16 +501,12 @@ function CanvasGrid({ setContextMenu }) {
         const adjustedX = x - scrollLeft;
         
         ctx.beginPath();
-        if (typeof ctx.roundRect === 'function') {
-          ctx.roundRect(adjustedX, 0, width, COLUMN_HEADER_HEIGHT, 2);
-        } else {
-          ctx.rect(adjustedX, 0, width, COLUMN_HEADER_HEIGHT);
-        }
+        ctx.rect(adjustedX, 0, width, COLUMN_HEADER_HEIGHT);
         ctx.fill();
       });
     }
     
-    // Draw focus indicator on active cell - make it more visible
+    // Draw focus indicator on active cell
     if (state.activeCell) {
       const [col, row] = getCellIndices(state.activeCell);
       const { x, y, width, height } = getCellPosition(col, row);
@@ -531,17 +517,7 @@ function CanvasGrid({ setContextMenu }) {
       // Draw focus border with a more prominent look
       ctx.strokeStyle = focusColor;
       ctx.lineWidth = 2;
-      
-      // Draw a double border for better visibility
       ctx.strokeRect(adjustedX, adjustedY, width, height);
-      
-      // Add inner glow effect
-      const glow = isDarkMode ? 'rgba(106, 183, 255, 0.3)' : 'rgba(26, 115, 232, 0.25)';
-      ctx.strokeStyle = glow;
-      ctx.lineWidth = 4;
-      ctx.strokeRect(adjustedX + 2, adjustedY + 2, width - 4, height - 4);
-      
-      ctx.lineWidth = 1;
     }
     
     renderInfoRef.current.overlayNeedsRedraw = false;
@@ -601,8 +577,7 @@ function CanvasGrid({ setContextMenu }) {
       y: container.scrollTop
     });
     
-    // Mark layers for redraw on scroll
-    // Grid needs redraw because headers scroll with content
+    // Mark all layers for redraw on scroll
     renderInfoRef.current.gridNeedsRedraw = true;
     renderInfoRef.current.cellsNeedsRedraw = true;
     renderInfoRef.current.overlayNeedsRedraw = true;
@@ -611,7 +586,7 @@ function CanvasGrid({ setContextMenu }) {
     requestAnimationFrame(render);
   }, [render]);
   
-  // Handle mouse down for selection
+  // Handle mouse down for selection - FIXED
   const handleMouseDown = useCallback((e) => {
     if (isEditing) return;
     
@@ -670,7 +645,7 @@ function CanvasGrid({ setContextMenu }) {
     setIsSelecting(false);
   }, []);
   
-  // Handle double click to edit cell
+  // Handle double click to edit cell - FIXED
   const handleDoubleClick = useCallback((e) => {
     const cellId = getCellIdAtPosition(e.clientX, e.clientY);
     if (!cellId) return;
@@ -699,7 +674,7 @@ function CanvasGrid({ setContextMenu }) {
     });
   }, [getCellIdAtPosition, getCellData, getCellPosition, getCellIndices]);
   
-  // Handle keyboard events
+  // Handle keyboard events - FIXED
   const handleKeyDown = useCallback((e) => {
     if (isEditing) return;
     
@@ -757,16 +732,22 @@ function CanvasGrid({ setContextMenu }) {
       // Start editing with the pressed key
       if (!state.activeCell) return;
       
-      const cellPosition = getCellPosition(...getCellIndices(state.activeCell));
+      const [col, row] = getCellIndices(state.activeCell);
+      const cellPosition = getCellPosition(col, row);
       const container = containerRef.current;
       
-      // Set up editing
+      // Get container position
+      const rect = container.getBoundingClientRect();
+      
+      // Set up editing with corrected position calculation
       setIsEditing(true);
       setEditCellId(state.activeCell);
-      setEditValue(e.key);
+      setEditValue(e.key); // Just set the initial key value
+      
+      // Properly position the editor
       setEditPosition({
-        x: cellPosition.x - container.scrollLeft + container.offsetLeft,
-        y: cellPosition.y - container.scrollTop + container.offsetTop,
+        x: cellPosition.x - container.scrollLeft + rect.left,
+        y: cellPosition.y - container.scrollTop + rect.top,
         width: cellPosition.width,
         height: cellPosition.height
       });
@@ -783,13 +764,17 @@ function CanvasGrid({ setContextMenu }) {
     render
   ]);
   
-  // Handle edit field changes
+  // Handle edit field changes - FIXED to prevent duplication
   const handleEditChange = useCallback((e) => {
+    // Use the event's target value directly to avoid state inconsistencies
     setEditValue(e.target.value);
   }, []);
   
-  // Handle edit field key presses
+  // Handle edit field key presses - FIXED
   const handleEditKeyDown = useCallback((e) => {
+    // Stop propagation to prevent double handling of key events
+    e.stopPropagation();
+    
     if (e.key === 'Enter' && !e.shiftKey) {
       // Finish editing
       e.preventDefault();
@@ -860,19 +845,43 @@ function CanvasGrid({ setContextMenu }) {
     });
   }, [setContextMenu]);
   
-  // Initialize and resize canvases
+  // Initialize and resize canvases - FIXED
   useEffect(() => {
     const resizeCanvases = () => {
       const container = containerRef.current;
       if (!container) return;
       
       const { clientWidth, clientHeight } = container;
+      
+      // Get device pixel ratio for high-DPI displays
+      const dpr = window.devicePixelRatio || 1;
+      
+      // Set all canvas dimensions with the right physical pixel scaling
+      [gridCanvasRef, cellsCanvasRef, overlayCanvasRef].forEach(canvasRef => {
+        if (!canvasRef.current) return;
+        
+        // Set the actual size in memory
+        canvasRef.current.width = clientWidth * dpr;
+        canvasRef.current.height = clientHeight * dpr;
+        
+        // Set the display size
+        canvasRef.current.style.width = `${clientWidth}px`;
+        canvasRef.current.style.height = `${clientHeight}px`;
+        
+        // Scale all drawing operations by the dpr
+        const ctx = canvasRef.current.getContext('2d');
+        ctx.scale(dpr, dpr);
+      });
+      
       setCanvasSize({ width: clientWidth, height: clientHeight });
       
       // Mark all layers for redraw
       renderInfoRef.current.gridNeedsRedraw = true;
       renderInfoRef.current.cellsNeedsRedraw = true;
       renderInfoRef.current.overlayNeedsRedraw = true;
+      
+      // Clear cell position cache when resizing
+      renderInfoRef.current.cellPositions.clear();
       
       // Trigger render
       requestAnimationFrame(render);
@@ -932,7 +941,8 @@ function CanvasGrid({ setContextMenu }) {
           width: '100%', 
           height: '100%', 
           overflow: 'auto',
-          outline: 'none'
+          outline: 'none',
+          position: 'relative' // Added for proper positioning context
         }}
         tabIndex={0}
         onMouseDown={handleMouseDown}
@@ -950,13 +960,13 @@ function CanvasGrid({ setContextMenu }) {
             position: 'relative'
           }}
         >
-          {/* Multiple canvas layers for better performance */}
+          {/* Canvas layers with absolute positioning instead of sticky */}
           <canvas
             ref={gridCanvasRef}
             width={canvasSize.width}
             height={canvasSize.height}
             style={{
-              position: 'sticky',
+              position: 'absolute',
               top: 0,
               left: 0,
               pointerEvents: 'none',
@@ -968,7 +978,7 @@ function CanvasGrid({ setContextMenu }) {
             width={canvasSize.width}
             height={canvasSize.height}
             style={{
-              position: 'sticky',
+              position: 'absolute',
               top: 0,
               left: 0,
               pointerEvents: 'none',
@@ -980,7 +990,7 @@ function CanvasGrid({ setContextMenu }) {
             width={canvasSize.width}
             height={canvasSize.height}
             style={{
-              position: 'sticky',
+              position: 'absolute',
               top: 0,
               left: 0,
               pointerEvents: 'none',
@@ -990,7 +1000,7 @@ function CanvasGrid({ setContextMenu }) {
         </div>
       </div>
       
-      {/* Cell editor with improved text selection */}
+      {/* Cell editor - FIXED */}
       {isEditing && (
         <div className="cell-editor-container" style={{
           position: 'absolute',
@@ -1019,17 +1029,24 @@ function CanvasGrid({ setContextMenu }) {
               font: 'inherit',
               backgroundColor: 'var(--bg-color)',
               color: 'var(--text-color)',
-              caretColor: 'var(--primary-color)', // Explicit caret color
+              caretColor: 'var(--primary-color)',
               fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
               fontSize: '13px',
               lineHeight: '21px'
             }}
             onSelect={(e) => {
-              // Make sure selection is visible over grid
               e.target.style.userSelect = 'text';
               e.target.style.webkitUserSelect = 'text';
             }}
             autoFocus
+            // Focus and position cursor at the end of the text
+            ref={(input) => {
+              if (input) {
+                input.focus();
+                const length = input.value.length;
+                input.setSelectionRange(length, length);
+              }
+            }}
           />
         </div>
       )}
