@@ -1,3 +1,4 @@
+// src/components/CanvasGrid.jsx - Complete fix
 import { useRef, useEffect, useState, useCallback } from 'react';
 import { useSpreadsheet } from '../context/SpreadsheetContext';
 import useSpreadsheetOperations from '../hooks/useSpreadsheetOperations';
@@ -5,15 +6,19 @@ import { getCellId, getColumnId, getCellIndices } from '../utils/cellHelpers';
 
 /**
  * Canvas-based grid renderer for high-performance spreadsheet
- * Fixed positioning and selection issues
+ * Completely overhauled to fix input and scrolling issues
  */
 function CanvasGrid({ setContextMenu }) {
-  // Create separate canvases for different layers to prevent flickering
-  const gridCanvasRef = useRef(null);    // For the grid lines and headers (static)
-  const cellsCanvasRef = useRef(null);   // For the cell contents (dynamic)
-  const overlayCanvasRef = useRef(null); // For selection highlights and focus indicators (dynamic)
+  // Canvas refs
+  const gridCanvasRef = useRef(null);
+  const cellsCanvasRef = useRef(null);
+  const overlayCanvasRef = useRef(null);
   
+  // DOM element refs
   const containerRef = useRef(null);
+  const editorRef = useRef(null);
+  
+  // Context and operations
   const { state, getColumnWidth, getRowHeight, getCellData } = useSpreadsheet();
   const { 
     setActiveCell, 
@@ -31,29 +36,27 @@ function CanvasGrid({ setContextMenu }) {
   const [selectionStart, setSelectionStart] = useState(null);
   const [isSelecting, setIsSelecting] = useState(false);
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
+  const [fps, setFps] = useState(0);
   
-  // Performance metrics for debugging
-  const [fpsCounter, setFpsCounter] = useState(0);
+  // Performance tracking refs
   const lastFrameTimeRef = useRef(performance.now());
   const frameCountRef = useRef(0);
+  const renderRequestRef = useRef(null);
   
   // Constants
   const ROW_HEADER_WIDTH = 40;
   const COLUMN_HEADER_HEIGHT = 28;
-  const DEFAULT_CELL_WIDTH = 100;
-  const DEFAULT_CELL_HEIGHT = 26;
   
-  // Cache and state tracking variables
+  // Render state tracking
   const renderInfoRef = useRef({
     gridNeedsRedraw: true,
     cellsNeedsRedraw: true,
     overlayNeedsRedraw: true,
-    lastVisibleRange: null,
-    cellPositions: new Map(), // Maps cellId -> {x, y, width, height}
+    cellPositions: new Map(),
     initialized: false
   });
   
-  // Get active sheet
+  // Get active sheet with fallback
   const activeSheet = state.sheets.find(sheet => sheet.id === state.activeSheetId) || {
     maxCol: 50,
     maxRow: 100,
@@ -62,7 +65,7 @@ function CanvasGrid({ setContextMenu }) {
     rowHeights: {}
   };
   
-  // Calculate the total grid dimensions
+  // Calculate total grid dimensions
   const getTotalWidth = useCallback(() => {
     let width = ROW_HEADER_WIDTH;
     for (let col = 0; col < activeSheet.maxCol; col++) {
@@ -79,71 +82,72 @@ function CanvasGrid({ setContextMenu }) {
     return height;
   }, [activeSheet.maxRow, getRowHeight]);
   
-  // Calculate visible range
+  // Get visible range with generous buffer
   const getVisibleRange = useCallback(() => {
     if (!containerRef.current) return null;
     
     const { scrollLeft, scrollTop, clientWidth, clientHeight } = containerRef.current;
     
-    // Find visible columns
+    // Find start column with buffer
     let startCol = 0;
-    let endCol = 0;
     let xPos = ROW_HEADER_WIDTH;
-    
     while (startCol < activeSheet.maxCol && xPos + getColumnWidth(startCol) <= scrollLeft) {
       xPos += getColumnWidth(startCol);
       startCol++;
     }
+    startCol = Math.max(0, startCol - 5); // Add buffer
     
+    // Find end column with buffer
     xPos = ROW_HEADER_WIDTH;
-    endCol = startCol;
+    for (let col = 0; col < startCol; col++) {
+      xPos += getColumnWidth(col);
+    }
+    
+    let endCol = startCol;
     while (endCol < activeSheet.maxCol && xPos <= scrollLeft + clientWidth) {
       xPos += getColumnWidth(endCol);
       endCol++;
     }
+    endCol = Math.min(activeSheet.maxCol - 1, endCol + 5); // Add buffer
     
-    // Find visible rows
+    // Find start row with buffer
     let startRow = 0;
-    let endRow = 0;
     let yPos = COLUMN_HEADER_HEIGHT;
-    
     while (startRow < activeSheet.maxRow && yPos + getRowHeight(startRow) <= scrollTop) {
       yPos += getRowHeight(startRow);
       startRow++;
     }
+    startRow = Math.max(0, startRow - 5); // Add buffer
     
+    // Find end row with buffer
     yPos = COLUMN_HEADER_HEIGHT;
-    endRow = startRow;
+    for (let row = 0; row < startRow; row++) {
+      yPos += getRowHeight(row);
+    }
+    
+    let endRow = startRow;
     while (endRow < activeSheet.maxRow && yPos <= scrollTop + clientHeight) {
       yPos += getRowHeight(endRow);
       endRow++;
     }
-    
-    // Add buffer for smooth scrolling
-    startCol = Math.max(0, startCol - 1);
-    startRow = Math.max(0, startRow - 1);
-    endCol = Math.min(activeSheet.maxCol - 1, endCol + 1);
-    endRow = Math.min(activeSheet.maxRow - 1, endRow + 1);
+    endRow = Math.min(activeSheet.maxRow - 1, endRow + 10); // Add larger buffer for rows
     
     return { startCol, endCol, startRow, endRow };
   }, [activeSheet.maxCol, activeSheet.maxRow, getColumnWidth, getRowHeight]);
   
-  // Get cell position and dimensions
+  // Get cell position with caching
   const getCellPosition = useCallback((col, row) => {
     const cellId = getCellId(col, row);
     
-    // Check if we've already calculated this cell's position
     if (renderInfoRef.current.cellPositions.has(cellId)) {
       return renderInfoRef.current.cellPositions.get(cellId);
     }
     
-    // Calculate x position
     let x = ROW_HEADER_WIDTH;
     for (let c = 0; c < col; c++) {
       x += getColumnWidth(c);
     }
     
-    // Calculate y position
     let y = COLUMN_HEADER_HEIGHT;
     for (let r = 0; r < row; r++) {
       y += getRowHeight(r);
@@ -158,12 +162,11 @@ function CanvasGrid({ setContextMenu }) {
     return position;
   }, [getColumnWidth, getRowHeight]);
   
-  // Get cell ID at position - FIXED
+  // Get cell ID at position with improved accuracy
   const getCellIdAtPosition = useCallback((clientX, clientY) => {
     const container = containerRef.current;
     if (!container) return null;
     
-    // Get the container's position and scroll position
     const rect = container.getBoundingClientRect();
     const scrollLeft = container.scrollLeft;
     const scrollTop = container.scrollTop;
@@ -172,21 +175,21 @@ function CanvasGrid({ setContextMenu }) {
     const x = clientX - rect.left + scrollLeft;
     const y = clientY - rect.top + scrollTop;
     
-    // Ignore if clicking on headers
+    // Skip if clicking on headers
     if (x < ROW_HEADER_WIDTH || y < COLUMN_HEADER_HEIGHT) {
       return null;
     }
     
     // Find column
     let col = 0;
-    let colX = ROW_HEADER_WIDTH;
+    let xPos = ROW_HEADER_WIDTH;
     
     while (col < activeSheet.maxCol) {
       const width = getColumnWidth(col);
-      if (x >= colX && x < colX + width) {
+      if (x >= xPos && x < xPos + width) {
         break;
       }
-      colX += width;
+      xPos += width;
       col++;
     }
     
@@ -194,14 +197,14 @@ function CanvasGrid({ setContextMenu }) {
     
     // Find row
     let row = 0;
-    let rowY = COLUMN_HEADER_HEIGHT;
+    let yPos = COLUMN_HEADER_HEIGHT;
     
     while (row < activeSheet.maxRow) {
       const height = getRowHeight(row);
-      if (y >= rowY && y < rowY + height) {
+      if (y >= yPos && y < yPos + height) {
         break;
       }
-      rowY += height;
+      yPos += height;
       row++;
     }
     
@@ -210,65 +213,56 @@ function CanvasGrid({ setContextMenu }) {
     return getCellId(col, row);
   }, [activeSheet.maxCol, activeSheet.maxRow, getColumnWidth, getRowHeight]);
   
-  // Draw the static grid (lines and headers)
+  // Draw the grid with headers
   const drawGrid = useCallback(() => {
     const canvas = gridCanvasRef.current;
     if (!canvas) return;
     
-    const ctx = canvas.getContext('2d', { alpha: false }); // Non-alpha for better performance
+    const ctx = canvas.getContext('2d', { alpha: false });
     if (!ctx) return;
     
-    // Only draw grid if it needs redraw
     if (!renderInfoRef.current.gridNeedsRedraw) return;
     
-    // Check if we're in dark mode
     const isDarkMode = document.body.getAttribute('data-theme') === 'dark';
-    
-    // Get theme colors - use directly for better performance
     const bgColor = isDarkMode ? '#202124' : '#ffffff';
     const headerBgColor = isDarkMode ? '#2d2e30' : '#f8f9fa';
     const textColor = isDarkMode ? '#e8eaed' : '#202124';
-    
-    // Use more visible grid lines in dark mode
     const gridLineColor = isDarkMode ? '#3c4043' : '#e0e0e0';
     
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     
-    // Get visible range
     const visibleRange = getVisibleRange();
     if (!visibleRange) return;
     
     const { startCol, endCol, startRow, endRow } = visibleRange;
     
-    // Set up text rendering with better legibility
     ctx.textBaseline = 'middle';
     ctx.font = isDarkMode 
-      ? '600 13px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'  // Bolder in dark mode
+      ? '600 13px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
       : '500 13px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
     
-    // Get container scroll position
     const container = containerRef.current;
     const scrollLeft = container?.scrollLeft || 0;
     const scrollTop = container?.scrollTop || 0;
     
-    // Draw grid background
+    // Fill background
     ctx.fillStyle = bgColor;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     
-    // Draw row headers area (fixed left column)
+    // Draw header backgrounds
     ctx.fillStyle = headerBgColor;
     ctx.fillRect(0, 0, ROW_HEADER_WIDTH, canvas.height);
-    
-    // Draw column headers area (fixed top row)
     ctx.fillRect(0, 0, canvas.width, COLUMN_HEADER_HEIGHT);
     
-    // Draw corner header
+    // Draw corner square
     ctx.strokeStyle = gridLineColor;
-    ctx.lineWidth = isDarkMode ? 1.5 : 1; // Slightly thicker lines in dark mode
+    ctx.lineWidth = isDarkMode ? 1.5 : 1;
     ctx.strokeRect(0, 0, ROW_HEADER_WIDTH, COLUMN_HEADER_HEIGHT);
     
-    // Draw visible grid lines - rows
+    // Draw grid lines
     ctx.beginPath();
+    
+    // Horizontal lines (rows)
     for (let row = startRow; row <= endRow + 1; row++) {
       const { y } = getCellPosition(0, row);
       const adjustedY = y - scrollTop;
@@ -277,7 +271,7 @@ function CanvasGrid({ setContextMenu }) {
       ctx.lineTo(canvas.width, adjustedY);
     }
     
-    // Draw visible grid lines - columns
+    // Vertical lines (columns)
     for (let col = startCol; col <= endCol + 1; col++) {
       const { x } = getCellPosition(col, 0);
       const adjustedX = x - scrollLeft;
@@ -294,14 +288,11 @@ function CanvasGrid({ setContextMenu }) {
       const { x, width } = getCellPosition(col, 0);
       const adjustedX = x - scrollLeft;
       
-      // Skip if outside viewport
       if (adjustedX + width < 0 || adjustedX > canvas.width) continue;
       
-      // Draw column label with better contrast
       ctx.fillStyle = textColor;
       ctx.textAlign = 'center';
       
-      // Apply a subtle shadow in dark mode for better readability
       if (isDarkMode) {
         ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
         ctx.shadowBlur = 2;
@@ -311,7 +302,6 @@ function CanvasGrid({ setContextMenu }) {
       
       ctx.fillText(getColumnId(col), adjustedX + width / 2, COLUMN_HEADER_HEIGHT / 2);
       
-      // Reset shadow
       ctx.shadowColor = 'transparent';
       ctx.shadowBlur = 0;
     }
@@ -321,14 +311,11 @@ function CanvasGrid({ setContextMenu }) {
       const { y, height } = getCellPosition(0, row);
       const adjustedY = y - scrollTop;
       
-      // Skip if outside viewport
       if (adjustedY + height < 0 || adjustedY > canvas.height) continue;
       
-      // Draw row label with better contrast
       ctx.fillStyle = textColor;
       ctx.textAlign = 'center';
       
-      // Apply a subtle shadow in dark mode for better readability
       if (isDarkMode) {
         ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
         ctx.shadowBlur = 2;
@@ -338,13 +325,12 @@ function CanvasGrid({ setContextMenu }) {
       
       ctx.fillText((row + 1).toString(), ROW_HEADER_WIDTH / 2, adjustedY + height / 2);
       
-      // Reset shadow
       ctx.shadowColor = 'transparent';
       ctx.shadowBlur = 0;
     }
     
     renderInfoRef.current.gridNeedsRedraw = false;
-  }, [getVisibleRange, getCellPosition, activeSheet.maxCol, activeSheet.maxRow, getColumnWidth, getRowHeight]);
+  }, [getVisibleRange, getCellPosition]);
   
   // Draw the cell contents
   const drawCells = useCallback(() => {
@@ -354,25 +340,28 @@ function CanvasGrid({ setContextMenu }) {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     
-    // Only draw cells if they need redraw
     if (!renderInfoRef.current.cellsNeedsRedraw) return;
     
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     
-    // Get theme colors
     const isDarkMode = document.body.getAttribute('data-theme') === 'dark';
     const textColor = isDarkMode ? '#e8eaed' : '#202124';
     
-    // Get visible range
     const visibleRange = getVisibleRange();
     if (!visibleRange) return;
     
     const { startCol, endCol, startRow, endRow } = visibleRange;
     
-    // Get container scroll position
     const container = containerRef.current;
     const scrollLeft = container?.scrollLeft || 0;
     const scrollTop = container?.scrollTop || 0;
+    
+    // Clip to content area (exclude headers)
+    ctx.save();
+    ctx.rect(ROW_HEADER_WIDTH, COLUMN_HEADER_HEIGHT, 
+             canvas.width - ROW_HEADER_WIDTH, 
+             canvas.height - COLUMN_HEADER_HEIGHT);
+    ctx.clip();
     
     // Draw visible cells
     for (let row = startRow; row <= endRow; row++) {
@@ -385,45 +374,76 @@ function CanvasGrid({ setContextMenu }) {
         const adjustedY = y - scrollTop;
         
         // Skip if outside viewport
-        if (adjustedX + width < 0 || adjustedX > canvas.width || 
-            adjustedY + height < 0 || adjustedY > canvas.height) continue;
+        if (adjustedX + width < ROW_HEADER_WIDTH || adjustedX > canvas.width || 
+            adjustedY + height < COLUMN_HEADER_HEIGHT || adjustedY > canvas.height) {
+          continue;
+        }
         
-        // Draw cell background (but only if it has a custom background color)
+        // Draw background if custom
         if (cellData.bgColor) {
           ctx.fillStyle = cellData.bgColor;
           ctx.fillRect(adjustedX, adjustedY, width, height);
         }
         
-        // Draw cell content
-        if (cellData.value) {
-          // Apply text formatting
+        // Draw cell content if exists
+        if (cellData.value !== undefined && cellData.value !== null && cellData.value !== '') {
+          // Apply text styling
           ctx.fillStyle = cellData.textColor || textColor;
           
-          // Set font with formatting
+          // Font with formatting
           let fontStyle = '';
           if (cellData.bold) fontStyle += 'bold ';
           if (cellData.italic) fontStyle += 'italic ';
           ctx.font = `${fontStyle}14px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
           
-          // Apply text alignment
+          // Display value with alignment
+          const displayValue = String(cellData.value);
+          
           if (cellData.align === 'center') {
             ctx.textAlign = 'center';
-            ctx.fillText(cellData.value.toString(), adjustedX + width / 2, adjustedY + height / 2, width - 8);
+            ctx.fillText(displayValue, adjustedX + width / 2, adjustedY + height / 2, width - 8);
           } else if (cellData.align === 'right') {
             ctx.textAlign = 'right';
-            ctx.fillText(cellData.value.toString(), adjustedX + width - 4, adjustedY + height / 2, width - 8);
+            ctx.fillText(displayValue, adjustedX + width - 4, adjustedY + height / 2, width - 8);
           } else {
             ctx.textAlign = 'left';
-            ctx.fillText(cellData.value.toString(), adjustedX + 4, adjustedY + height / 2, width - 8);
+            ctx.fillText(displayValue, adjustedX + 4, adjustedY + height / 2, width - 8);
+          }
+          
+          // Underline if needed
+          if (cellData.underline) {
+            ctx.beginPath();
+            
+            const textWidth = ctx.measureText(displayValue).width;
+            let lineX, lineWidth;
+            
+            if (cellData.align === 'center') {
+              lineX = adjustedX + width / 2 - textWidth / 2;
+              lineWidth = textWidth;
+            } else if (cellData.align === 'right') {
+              lineX = adjustedX + width - 4 - textWidth;
+              lineWidth = textWidth;
+            } else {
+              lineX = adjustedX + 4;
+              lineWidth = textWidth;
+            }
+            
+            ctx.moveTo(lineX, adjustedY + height - 6);
+            ctx.lineTo(lineX + lineWidth, adjustedY + height - 6);
+            ctx.strokeStyle = cellData.textColor || textColor;
+            ctx.lineWidth = 1;
+            ctx.stroke();
           }
         }
       }
     }
     
+    ctx.restore(); // Remove clipping
+    
     renderInfoRef.current.cellsNeedsRedraw = false;
   }, [getVisibleRange, getCellPosition, getCellData]);
   
-  // Draw selection overlay - FIXED
+  // Draw selection overlay
   const drawOverlay = useCallback(() => {
     const canvas = overlayCanvasRef.current;
     if (!canvas) return;
@@ -431,54 +451,46 @@ function CanvasGrid({ setContextMenu }) {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     
-    // Only draw overlay if it needs redraw
     if (!renderInfoRef.current.overlayNeedsRedraw) return;
     
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     
-    // Get theme colors based on dark/light mode
     const isDarkMode = document.body.getAttribute('data-theme') === 'dark';
     
-    // Use more visible selection colors based on theme
     const selectedColor = isDarkMode 
-      ? 'rgba(100, 130, 180, 0.5)'  // More visible blue in dark mode
-      : 'rgba(200, 230, 255, 0.6)'; // Light blue for light mode
+      ? 'rgba(100, 130, 180, 0.5)'
+      : 'rgba(200, 230, 255, 0.6)';
       
     const focusColor = isDarkMode
-      ? '#6ab7ff' // Brighter blue for dark mode
-      : '#1a73e8'; // Standard blue for light mode
+      ? '#6ab7ff'
+      : '#1a73e8';
       
     const headerSelectedColor = isDarkMode
-      ? 'rgba(120, 140, 190, 0.7)' // More visible for dark mode
-      : 'rgba(180, 210, 250, 0.8)'; // Standard for light mode
+      ? 'rgba(120, 140, 190, 0.7)'
+      : 'rgba(180, 210, 250, 0.8)';
     
-    // Get container scroll position
     const container = containerRef.current;
     const scrollLeft = container?.scrollLeft || 0;
     const scrollTop = container?.scrollTop || 0;
     
     // Highlight selected cells
-    if (state.selectedCells.length > 0) {
-      // Track selected rows and columns for header highlighting
+    if (state.selectedCells && state.selectedCells.length > 0) {
       const selectedRows = new Set();
       const selectedCols = new Set();
       
-      // Draw each selected cell with appropriate opacity
+      // Draw selection background for each cell
       ctx.fillStyle = selectedColor;
       
       state.selectedCells.forEach(cellId => {
         const [col, row] = getCellIndices(cellId);
         const { x, y, width, height } = getCellPosition(col, row);
         
-        // Adjust for scroll position
         const adjustedX = x - scrollLeft;
         const adjustedY = y - scrollTop;
         
-        // Track row and column
         selectedRows.add(row);
         selectedCols.add(col);
         
-        // Draw selection rectangle
         ctx.beginPath();
         ctx.rect(adjustedX, adjustedY, width, height);
         ctx.fill();
@@ -504,17 +516,46 @@ function CanvasGrid({ setContextMenu }) {
         ctx.rect(adjustedX, 0, width, COLUMN_HEADER_HEIGHT);
         ctx.fill();
       });
+      
+      // Draw selection border
+      ctx.strokeStyle = isDarkMode ? '#8ab4f8' : '#4285f4';
+      ctx.lineWidth = 1;
+      
+      if (state.selectedCells.length > 1) {
+        // Find selection bounds
+        let minCol = Infinity, maxCol = -Infinity;
+        let minRow = Infinity, maxRow = -Infinity;
+        
+        state.selectedCells.forEach(cellId => {
+          const [col, row] = getCellIndices(cellId);
+          minCol = Math.min(minCol, col);
+          maxCol = Math.max(maxCol, col);
+          minRow = Math.min(minRow, row);
+          maxRow = Math.max(maxRow, row);
+        });
+        
+        // Draw selection border
+        const startPos = getCellPosition(minCol, minRow);
+        const endPos = getCellPosition(maxCol, maxRow);
+        
+        const x = startPos.x - scrollLeft;
+        const y = startPos.y - scrollTop;
+        const width = (endPos.x + endPos.width) - startPos.x;
+        const height = (endPos.y + endPos.height) - startPos.y;
+        
+        ctx.strokeRect(x, y, width, height);
+      }
     }
     
     // Draw focus indicator on active cell
-    if (state.activeCell) {
+    if (state.activeCell && !isEditing) {
       const [col, row] = getCellIndices(state.activeCell);
       const { x, y, width, height } = getCellPosition(col, row);
       
       const adjustedX = x - scrollLeft;
       const adjustedY = y - scrollTop;
       
-      // Draw focus border with a more prominent look
+      // Draw focus border
       ctx.strokeStyle = focusColor;
       ctx.lineWidth = 2;
       ctx.strokeRect(adjustedX, adjustedY, width, height);
@@ -527,47 +568,46 @@ function CanvasGrid({ setContextMenu }) {
     frameCountRef.current++;
     
     if (now - lastFrameTimeRef.current >= 1000) {
-      setFpsCounter(frameCountRef.current);
+      setFps(frameCountRef.current);
       frameCountRef.current = 0;
       lastFrameTimeRef.current = now;
     }
-  }, [state.selectedCells, state.activeCell, getCellPosition]);
+  }, [state.selectedCells, state.activeCell, isEditing, getCellPosition]);
   
-  // Main render function that coordinates all drawing
+  // Main render function
   const render = useCallback(() => {
-    if (
-      !containerRef.current || 
-      !gridCanvasRef.current || 
-      !cellsCanvasRef.current || 
-      !overlayCanvasRef.current
-    ) return;
+    if (!gridCanvasRef.current || !cellsCanvasRef.current || !overlayCanvasRef.current) {
+      renderRequestRef.current = requestAnimationFrame(render);
+      return;
+    }
     
     // Resize canvases if needed
-    const { clientWidth, clientHeight } = containerRef.current;
-    if (clientWidth !== canvasSize.width || clientHeight !== canvasSize.height) {
-      setCanvasSize({ width: clientWidth, height: clientHeight });
+    const container = containerRef.current;
+    if (container && (container.clientWidth !== canvasSize.width || 
+                       container.clientHeight !== canvasSize.height)) {
+      setCanvasSize({ width: container.clientWidth, height: container.clientHeight });
       renderInfoRef.current.gridNeedsRedraw = true;
       renderInfoRef.current.cellsNeedsRedraw = true;
       renderInfoRef.current.overlayNeedsRedraw = true;
     }
     
-    // Draw all layers in correct order
-    drawGrid();    // Static grid lines and headers
-    drawCells();   // Cell contents
-    drawOverlay(); // Selection and focus indicators
+    // Draw all layers
+    drawGrid();
+    drawCells();
+    drawOverlay();
     
-    // Request next frame if needed
+    // Continue animation loop if needed
     if (!renderInfoRef.current.initialized || 
         renderInfoRef.current.gridNeedsRedraw || 
         renderInfoRef.current.cellsNeedsRedraw || 
         renderInfoRef.current.overlayNeedsRedraw) {
-      requestAnimationFrame(render);
+      renderRequestRef.current = requestAnimationFrame(render);
     }
     
     renderInfoRef.current.initialized = true;
   }, [drawGrid, drawCells, drawOverlay, canvasSize]);
   
-  // Handle scroll
+  // Handle scroll with full redraw
   const handleScroll = useCallback(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -577,23 +617,26 @@ function CanvasGrid({ setContextMenu }) {
       y: container.scrollTop
     });
     
-    // Mark all layers for redraw on scroll
+    // Always redraw all layers when scrolling
     renderInfoRef.current.gridNeedsRedraw = true;
     renderInfoRef.current.cellsNeedsRedraw = true;
     renderInfoRef.current.overlayNeedsRedraw = true;
     
-    // Request animation frame for smooth scrolling
-    requestAnimationFrame(render);
+    // Request animation frame
+    if (!renderRequestRef.current) {
+      renderRequestRef.current = requestAnimationFrame(render);
+    }
   }, [render]);
   
-  // Handle mouse down for selection - FIXED
+  // Handle mouse down for cell selection
   const handleMouseDown = useCallback((e) => {
-    if (isEditing) return;
+    // Ignore if editing or not primary button
+    if (isEditing || e.button !== 0) return;
     
     const cellId = getCellIdAtPosition(e.clientX, e.clientY);
     if (!cellId) return;
     
-    // Start selection
+    // Start selection process
     setSelectionStart(cellId);
     setIsSelecting(true);
     
@@ -605,10 +648,13 @@ function CanvasGrid({ setContextMenu }) {
     
     // Mark overlay for redraw
     renderInfoRef.current.overlayNeedsRedraw = true;
-    requestAnimationFrame(render);
+    
+    if (!renderRequestRef.current) {
+      renderRequestRef.current = requestAnimationFrame(render);
+    }
   }, [isEditing, getCellIdAtPosition, setActiveCell, selectCells, render]);
   
-  // Handle mouse move for selection
+  // Handle mouse move for selection range
   const handleMouseMove = useCallback((e) => {
     if (!isSelecting || !selectionStart) return;
     
@@ -637,20 +683,27 @@ function CanvasGrid({ setContextMenu }) {
     
     // Mark overlay for redraw
     renderInfoRef.current.overlayNeedsRedraw = true;
-    requestAnimationFrame(render);
+    
+    if (!renderRequestRef.current) {
+      renderRequestRef.current = requestAnimationFrame(render);
+    }
   }, [isSelecting, selectionStart, getCellIdAtPosition, selectCells, render]);
   
-  // Handle mouse up
+  // Handle mouse up to end selection
   const handleMouseUp = useCallback(() => {
     setIsSelecting(false);
   }, []);
   
-  // Handle double click to edit cell - FIXED
+  // Handle double click to edit cell
   const handleDoubleClick = useCallback((e) => {
+    // Prevent event bubbling
+    e.preventDefault();
+    e.stopPropagation();
+    
     const cellId = getCellIdAtPosition(e.clientX, e.clientY);
     if (!cellId) return;
     
-    // Get cell data
+    // Get cell data and position
     const cellData = getCellData(cellId);
     const [col, row] = getCellIndices(cellId);
     const cellPosition = getCellPosition(col, row);
@@ -658,12 +711,14 @@ function CanvasGrid({ setContextMenu }) {
     const container = containerRef.current;
     if (!container) return;
     
-    // Set up editing with corrected position calculation
+    // Set editing state
     setIsEditing(true);
     setEditCellId(cellId);
+    
+    // Get formula or value, with formula taking precedence
     setEditValue(cellData.formula || cellData.value || '');
     
-    // Calculate position relative to the visible viewport
+    // Calculate editor position
     const rect = container.getBoundingClientRect();
     
     setEditPosition({
@@ -672,27 +727,30 @@ function CanvasGrid({ setContextMenu }) {
       width: cellPosition.width,
       height: cellPosition.height
     });
-  }, [getCellIdAtPosition, getCellData, getCellPosition, getCellIndices]);
+  }, [getCellIdAtPosition, getCellData, getCellPosition]);
   
-  // Handle keyboard events - FIXED
+  // Handle keyboard navigation and editing
   const handleKeyDown = useCallback((e) => {
+    // Skip if already editing
     if (isEditing) return;
     
-    // Skip if event isn't from canvas container
+    // Skip if event isn't from container
     if (e.target !== containerRef.current) return;
     
-    // Handle navigation keys
+    // Navigation keys
     if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab', 'Enter'].includes(e.key)) {
       e.preventDefault();
       
       if (!state.activeCell) return;
       
+      // Determine direction
       const direction = e.key === 'Tab' 
         ? (e.shiftKey ? 'left' : 'right') 
         : e.key === 'Enter'
-          ? 'down'
+          ? (e.shiftKey ? 'up' : 'down')
           : e.key.replace('Arrow', '').toLowerCase();
       
+      // Get next cell
       const nextCellId = navigateWithKeyboard(direction, state.activeCell);
       if (nextCellId) {
         setActiveCell(nextCellId);
@@ -703,103 +761,139 @@ function CanvasGrid({ setContextMenu }) {
         const { x, y, width, height } = getCellPosition(col, row);
         const container = containerRef.current;
         
-        if (x < container.scrollLeft) {
-          container.scrollLeft = x;
+        if (x < container.scrollLeft + ROW_HEADER_WIDTH) {
+          container.scrollLeft = Math.max(0, x - ROW_HEADER_WIDTH);
         } else if (x + width > container.scrollLeft + container.clientWidth) {
-          container.scrollLeft = x + width - container.clientWidth;
+          container.scrollLeft = x + width - container.clientWidth + 5;
         }
         
-        if (y < container.scrollTop) {
-          container.scrollTop = y;
+        if (y < container.scrollTop + COLUMN_HEADER_HEIGHT) {
+          container.scrollTop = Math.max(0, y - COLUMN_HEADER_HEIGHT);
         } else if (y + height > container.scrollTop + container.clientHeight) {
-          container.scrollTop = y + height - container.clientHeight;
+          container.scrollTop = y + height - container.clientHeight + 5;
         }
         
         // Mark overlay for redraw
         renderInfoRef.current.overlayNeedsRedraw = true;
-        requestAnimationFrame(render);
+        if (!renderRequestRef.current) {
+          renderRequestRef.current = requestAnimationFrame(render);
+        }
       }
     } else if (e.key === 'Delete' || e.key === 'Backspace') {
       // Clear selected cells
-      state.selectedCells.forEach(cellId => {
-        updateCellValue(cellId, '');
-      });
-      
-      // Mark cells for redraw
-      renderInfoRef.current.cellsNeedsRedraw = true;
-      requestAnimationFrame(render);
+      if (state.selectedCells.length > 0) {
+        state.selectedCells.forEach(cellId => {
+          updateCellValue(cellId, '');
+        });
+        
+        // Mark for redraw
+        renderInfoRef.current.cellsNeedsRedraw = true;
+        if (!renderRequestRef.current) {
+          renderRequestRef.current = requestAnimationFrame(render);
+        }
+      }
+    } else if (e.key === 'F2') {
+      // F2 key starts editing like Excel
+      if (state.activeCell) {
+        startEditingActiveCell();
+      }
     } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-      // Start editing with the pressed key
+      // Typing starts editing with the pressed key
       if (!state.activeCell) return;
       
-      const [col, row] = getCellIndices(state.activeCell);
-      const cellPosition = getCellPosition(col, row);
-      const container = containerRef.current;
-      
-      // Get container position
-      const rect = container.getBoundingClientRect();
-      
-      // Set up editing with corrected position calculation
-      setIsEditing(true);
-      setEditCellId(state.activeCell);
-      setEditValue(e.key); // Just set the initial key value
-      
-      // Properly position the editor
-      setEditPosition({
-        x: cellPosition.x - container.scrollLeft + rect.left,
-        y: cellPosition.y - container.scrollTop + rect.top,
-        width: cellPosition.width,
-        height: cellPosition.height
-      });
+      startEditingActiveCell(e.key);
     }
   }, [
-    isEditing, 
-    state.activeCell, 
-    state.selectedCells, 
-    navigateWithKeyboard, 
-    setActiveCell, 
-    selectCells, 
+    isEditing,
+    state.activeCell,
+    state.selectedCells,
+    navigateWithKeyboard,
+    setActiveCell,
+    selectCells,
     getCellPosition,
     updateCellValue,
     render
   ]);
   
-  // Handle edit field changes - FIXED to prevent duplication
+  // Helper to start editing the active cell
+  const startEditingActiveCell = useCallback((initialValue = null) => {
+    if (!state.activeCell || !containerRef.current) return;
+    
+    const [col, row] = getCellIndices(state.activeCell);
+    const cellPosition = getCellPosition(col, row);
+    const cellData = getCellData(state.activeCell);
+    const container = containerRef.current;
+    const rect = container.getBoundingClientRect();
+    
+    // Set editing state
+    setIsEditing(true);
+    setEditCellId(state.activeCell);
+    
+    // If we have an initial value, use it; otherwise use existing value/formula
+    const value = initialValue !== null 
+      ? initialValue 
+      : (cellData.formula || cellData.value || '');
+      
+    setEditValue(value);
+    
+    // Position editor
+    setEditPosition({
+      x: cellPosition.x - container.scrollLeft + rect.left,
+      y: cellPosition.y - container.scrollTop + rect.top,
+      width: cellPosition.width,
+      height: cellPosition.height
+    });
+  }, [state.activeCell, getCellIndices, getCellPosition, getCellData]);
+  
+  // Handle edit field change
   const handleEditChange = useCallback((e) => {
-    // Use the event's target value directly to avoid state inconsistencies
+    // Use direct value from event to prevent state lag
     setEditValue(e.target.value);
   }, []);
   
-  // Handle edit field key presses - FIXED
+  // Handle edit field key presses
   const handleEditKeyDown = useCallback((e) => {
-    // Stop propagation to prevent double handling of key events
+    // Stop propagation to prevent container from processing the same event
     e.stopPropagation();
     
     if (e.key === 'Enter' && !e.shiftKey) {
-      // Finish editing
+      // Finish editing and move down
       e.preventDefault();
       
       if (editCellId) {
         updateCellValue(editCellId, editValue);
         setIsEditing(false);
         
-        // Move to cell below
+        // Move to next cell
         const nextCellId = navigateWithKeyboard('down', editCellId);
         if (nextCellId) {
           setActiveCell(nextCellId);
           selectCells([nextCellId]);
         }
         
-        // Mark layers for redraw
+        // Mark for redraw
         renderInfoRef.current.cellsNeedsRedraw = true;
         renderInfoRef.current.overlayNeedsRedraw = true;
-        requestAnimationFrame(render);
+        if (!renderRequestRef.current) {
+          renderRequestRef.current = requestAnimationFrame(render);
+        }
+        
+        // Restore focus to container
+        setTimeout(() => {
+          containerRef.current?.focus();
+        }, 0);
       }
     } else if (e.key === 'Escape') {
       // Cancel editing
+      e.preventDefault();
       setIsEditing(false);
+      
+      // Restore focus to container
+      setTimeout(() => {
+        containerRef.current?.focus();
+      }, 0);
     } else if (e.key === 'Tab') {
-      // Finish editing and move to next cell
+      // Finish editing and move right or left
       e.preventDefault();
       
       if (editCellId) {
@@ -814,13 +908,28 @@ function CanvasGrid({ setContextMenu }) {
           selectCells([nextCellId]);
         }
         
-        // Mark layers for redraw
+        // Mark for redraw
         renderInfoRef.current.cellsNeedsRedraw = true;
         renderInfoRef.current.overlayNeedsRedraw = true;
-        requestAnimationFrame(render);
+        if (!renderRequestRef.current) {
+          renderRequestRef.current = requestAnimationFrame(render);
+        }
+        
+        // Restore focus to container
+        setTimeout(() => {
+          containerRef.current?.focus();
+        }, 0);
       }
     }
-  }, [editCellId, editValue, updateCellValue, navigateWithKeyboard, setActiveCell, selectCells, render]);
+  }, [
+    editCellId, 
+    editValue, 
+    updateCellValue, 
+    navigateWithKeyboard, 
+    setActiveCell, 
+    selectCells, 
+    render
+  ]);
   
   // Handle edit field blur
   const handleEditBlur = useCallback(() => {
@@ -828,9 +937,16 @@ function CanvasGrid({ setContextMenu }) {
       updateCellValue(editCellId, editValue);
       setIsEditing(false);
       
-      // Mark cells for redraw
+      // Mark for redraw
       renderInfoRef.current.cellsNeedsRedraw = true;
-      requestAnimationFrame(render);
+      if (!renderRequestRef.current) {
+        renderRequestRef.current = requestAnimationFrame(render);
+      }
+      
+      // Restore focus to container
+      setTimeout(() => {
+        containerRef.current?.focus();
+      }, 0);
     }
   }, [editCellId, editValue, updateCellValue, render]);
   
@@ -845,7 +961,7 @@ function CanvasGrid({ setContextMenu }) {
     });
   }, [setContextMenu]);
   
-  // Initialize and resize canvases - FIXED
+  // Initialize and resize canvases
   useEffect(() => {
     const resizeCanvases = () => {
       const container = containerRef.current;
@@ -856,21 +972,21 @@ function CanvasGrid({ setContextMenu }) {
       // Get device pixel ratio for high-DPI displays
       const dpr = window.devicePixelRatio || 1;
       
-      // Set all canvas dimensions with the right physical pixel scaling
+      // Set all canvas dimensions with proper scaling
       [gridCanvasRef, cellsCanvasRef, overlayCanvasRef].forEach(canvasRef => {
         if (!canvasRef.current) return;
         
-        // Set the actual size in memory
+        // Set physical size
         canvasRef.current.width = clientWidth * dpr;
         canvasRef.current.height = clientHeight * dpr;
         
-        // Set the display size
+        // Set display size
         canvasRef.current.style.width = `${clientWidth}px`;
         canvasRef.current.style.height = `${clientHeight}px`;
         
-        // Scale all drawing operations by the dpr
+        // Scale for high-DPI
         const ctx = canvasRef.current.getContext('2d');
-        ctx.scale(dpr, dpr);
+        if (ctx) ctx.scale(dpr, dpr);
       });
       
       setCanvasSize({ width: clientWidth, height: clientHeight });
@@ -880,11 +996,13 @@ function CanvasGrid({ setContextMenu }) {
       renderInfoRef.current.cellsNeedsRedraw = true;
       renderInfoRef.current.overlayNeedsRedraw = true;
       
-      // Clear cell position cache when resizing
+      // Clear position cache
       renderInfoRef.current.cellPositions.clear();
       
       // Trigger render
-      requestAnimationFrame(render);
+      if (!renderRequestRef.current) {
+        renderRequestRef.current = requestAnimationFrame(render);
+      }
     };
     
     // Initial resize
@@ -895,6 +1013,11 @@ function CanvasGrid({ setContextMenu }) {
     
     return () => {
       window.removeEventListener('resize', resizeCanvases);
+      
+      // Cancel any pending animation frames
+      if (renderRequestRef.current) {
+        cancelAnimationFrame(renderRequestRef.current);
+      }
     };
   }, [render]);
   
@@ -904,6 +1027,7 @@ function CanvasGrid({ setContextMenu }) {
     if (!container) return;
     
     container.addEventListener('scroll', handleScroll);
+    
     return () => {
       container.removeEventListener('scroll', handleScroll);
     };
@@ -912,38 +1036,43 @@ function CanvasGrid({ setContextMenu }) {
   // Force redraw when selection or active cell changes
   useEffect(() => {
     renderInfoRef.current.overlayNeedsRedraw = true;
-    requestAnimationFrame(render);
+    
+    if (!renderRequestRef.current) {
+      renderRequestRef.current = requestAnimationFrame(render);
+    }
   }, [state.selectedCells, state.activeCell, render]);
   
   // Force redraw when cell data changes
   useEffect(() => {
     renderInfoRef.current.cellsNeedsRedraw = true;
-    requestAnimationFrame(render);
+    
+    if (!renderRequestRef.current) {
+      renderRequestRef.current = requestAnimationFrame(render);
+    }
   }, [activeSheet.cells, render]);
   
-  // Focus the container on mount to enable keyboard navigation
+  // Start the render loop and focus container
   useEffect(() => {
     const container = containerRef.current;
     if (container) {
       container.focus();
     }
     
-    // Initial render
-    requestAnimationFrame(render);
+    // Start render loop
+    renderRequestRef.current = requestAnimationFrame(render);
+    
+    return () => {
+      if (renderRequestRef.current) {
+        cancelAnimationFrame(renderRequestRef.current);
+      }
+    };
   }, [render]);
   
   return (
-    <div className="canvas-grid-container" style={{ position: 'relative', flex: 1, overflow: 'hidden' }}>
+    <div className="canvas-grid-container" data-mode={isSelecting ? "selecting" : "default"}>
       <div 
         ref={containerRef}
         className="canvas-scroll-container"
-        style={{ 
-          width: '100%', 
-          height: '100%', 
-          overflow: 'auto',
-          outline: 'none',
-          position: 'relative' // Added for proper positioning context
-        }}
         tabIndex={0}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
@@ -951,7 +1080,6 @@ function CanvasGrid({ setContextMenu }) {
         onDoubleClick={handleDoubleClick}
         onKeyDown={handleKeyDown}
         onContextMenu={handleContextMenu}
-        data-mode={isSelecting ? "selecting" : "default"}
       >
         <div 
           style={{ 
@@ -960,13 +1088,13 @@ function CanvasGrid({ setContextMenu }) {
             position: 'relative'
           }}
         >
-          {/* Canvas layers with absolute positioning instead of sticky */}
+          {/* Canvas layers - FIXED positioning */}
           <canvas
             ref={gridCanvasRef}
             width={canvasSize.width}
             height={canvasSize.height}
             style={{
-              position: 'absolute',
+              position: 'fixed',
               top: 0,
               left: 0,
               pointerEvents: 'none',
@@ -978,7 +1106,7 @@ function CanvasGrid({ setContextMenu }) {
             width={canvasSize.width}
             height={canvasSize.height}
             style={{
-              position: 'absolute',
+              position: 'fixed',
               top: 0,
               left: 0,
               pointerEvents: 'none',
@@ -990,7 +1118,7 @@ function CanvasGrid({ setContextMenu }) {
             width={canvasSize.width}
             height={canvasSize.height}
             style={{
-              position: 'absolute',
+              position: 'fixed',
               top: 0,
               left: 0,
               pointerEvents: 'none',
@@ -1000,60 +1128,39 @@ function CanvasGrid({ setContextMenu }) {
         </div>
       </div>
       
-      {/* Cell editor - FIXED */}
+      {/* Cell editor with improved handling */}
       {isEditing && (
-        <div className="cell-editor-container" style={{
-          position: 'absolute',
-          left: `${editPosition.x}px`,
-          top: `${editPosition.y}px`,
-          width: `${editPosition.width}px`,
-          height: `${editPosition.height}px`,
-          zIndex: 20,
-          boxShadow: '0 0 0 2px var(--primary-color)',
-          backgroundColor: 'var(--bg-color)',
-          overflow: 'visible'
-        }}>
+        <div 
+          className="cell-editor-container" 
+          style={{
+            position: 'fixed',
+            left: `${editPosition.x}px`,
+            top: `${editPosition.y}px`,
+            width: `${editPosition.width}px`,
+            height: `${editPosition.height}px`,
+            zIndex: 20
+          }}
+        >
           <input
+            ref={editorRef}
             type="text"
             value={editValue}
             onChange={handleEditChange}
             onKeyDown={handleEditKeyDown}
             onBlur={handleEditBlur}
             className="cell-editor"
-            style={{
-              width: '100%',
-              height: '100%',
-              padding: '1px 3px',
-              border: 'none',
-              outline: 'none',
-              font: 'inherit',
-              backgroundColor: 'var(--bg-color)',
-              color: 'var(--text-color)',
-              caretColor: 'var(--primary-color)',
-              fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-              fontSize: '13px',
-              lineHeight: '21px'
-            }}
-            onSelect={(e) => {
-              e.target.style.userSelect = 'text';
-              e.target.style.webkitUserSelect = 'text';
-            }}
             autoFocus
-            // Focus and position cursor at the end of the text
-            ref={(input) => {
-              if (input) {
-                input.focus();
-                const length = input.value.length;
-                input.setSelectionRange(length, length);
-              }
+            onFocus={(e) => {
+              const length = e.target.value.length;
+              e.target.setSelectionRange(length, length);
             }}
           />
         </div>
       )}
       
-      {/* Performance metrics */}
+      {/* Performance stats */}
       <div className="performance-stats">
-        FPS: {fpsCounter} | Cells: {state.selectedCells.length}
+        FPS: {fps} | Cells: {state.selectedCells.length}
       </div>
     </div>
   );

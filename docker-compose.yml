@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  spreadsheet-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "2080:80"
+    restart: unless-stopped
+    # Optional: if you want to mount volumes for development
+    # volumes:
+    #   - ./src:/app/src
