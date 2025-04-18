@@ -1,4 +1,3 @@
-// src/App.jsx
 import { useState, useEffect } from 'react'
 import { SpreadsheetProvider } from './context/SpreadsheetContext'
 import FormulaBar from './components/FormulaBar'
@@ -8,6 +7,7 @@ import Toolbar from './components/Toolbar'
 import StatusBar from './components/StatusBar'
 import ContextMenu from './components/ContextMenu'
 import Chart from './components/Chart'
+import './styles/index.css'
 
 function App() {
   const [theme, setTheme] = useState('light')
@@ -106,7 +106,7 @@ function App() {
         </header>
         
         {isLoading ? (
-          <div style={{ 
+          <div className="loading-container" style={{ 
             flex: 1, 
             display: 'flex', 
             justifyContent: 'center', 
