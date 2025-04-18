@@ -1,5 +1,3 @@
-/* Import canvas-specific styles */
-@import './canvas-additions.css';
 
 /* Base styles and variables */
 :root {
@@ -25,6 +23,7 @@
   --z-index-header: 10;
   --z-index-cell-focus: 5;
   --z-index-context-menu: 100;
+  --z-index-chart: 50;
   --cell-height: 26px;
   --cell-width: 100px;
   --header-height: 28px;
@@ -122,13 +121,20 @@ body {
   overflow: hidden;
 }
 
+.main-content {
+  flex: 1;
+  position: relative;
+  display: flex;
+  overflow: hidden;
+}
+
 /* Toolbar */
 .toolbar {
   display: flex;
   padding: 0.5rem;
   background-color: var(--header-bg);
   border-bottom: 1px solid var(--border-color);
-  gap: 1rem;
+  gap: 0.5rem;
   flex-wrap: wrap;
   align-items: center;
 }
@@ -137,13 +143,14 @@ body {
   display: flex;
   gap: 0.25rem;
   align-items: center;
+  position: relative;
 }
 
 .toolbar-divider {
   width: 1px;
   height: 24px;
   background-color: var(--border-color);
-  margin: 0 0.5rem;
+  margin: 0 0.25rem;
 }
 
 /* Formula bar */
@@ -184,6 +191,27 @@ body {
 .formula-input:focus {
   border-color: var(--primary-color);
   box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.05), 0 0 0 2px var(--primary-light);
+}
+
+/* Status bar */
+.status-bar {
+  display: flex;
+  align-items: center;
+  padding: 4px 8px;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  background-color: var(--header-bg);
+  border-top: 1px solid var(--border-color);
+}
+
+.status-bar-item {
+  margin-right: 16px;
+  white-space: nowrap;
+}
+
+.status-bar-mode {
+  font-weight: 500;
+  color: var(--primary-color);
 }
 
 /* Sheet tabs */
@@ -272,6 +300,137 @@ body {
   margin: 0.25rem 0;
 }
 
+/* Dropdown menus */
+.dropdown-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  background-color: var(--bg-color);
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius);
+  box-shadow: var(--shadow-md);
+  z-index: 30;
+  min-width: 180px;
+  margin-top: 4px;
+}
+
+.dropdown-item {
+  padding: 0.5rem 1rem;
+  cursor: pointer;
+  font-size: 0.875rem;
+  transition: background-color var(--transition-speed);
+  white-space: nowrap;
+}
+
+.dropdown-item:hover {
+  background-color: var(--cell-selected);
+}
+
+.dropdown-divider {
+  height: 1px;
+  background-color: var(--border-color);
+  margin: 0.25rem 0;
+}
+
+/* Color picker */
+.color-picker {
+  position: absolute;
+  background-color: var(--bg-color);
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius);
+  box-shadow: var(--shadow-md);
+  z-index: 1000;
+  padding: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  width: 220px;
+}
+
+.color-swatch {
+  width: 20px;
+  height: 20px;
+  border-radius: 2px;
+  cursor: pointer;
+  transition: transform 0.1s;
+}
+
+.color-swatch:hover {
+  transform: scale(1.2);
+}
+
+/* Chart styles */
+.chart-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0, 0, 0, 0.5);
+  z-index: var(--z-index-chart);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 2rem;
+}
+
+.chart-container {
+  background-color: var(--bg-color);
+  border-radius: var(--border-radius);
+  box-shadow: var(--shadow-md);
+  width: 90%;
+  max-width: 800px;
+  max-height: 90%;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.chart-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.chart-title {
+  font-size: 1.1rem;
+  font-weight: 500;
+}
+
+.chart-close-btn {
+  background: none;
+  border: none;
+  font-size: 1.5rem;
+  cursor: pointer;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  transition: background-color var(--transition-speed);
+}
+
+.chart-close-btn:hover {
+  background-color: var(--cell-selected);
+}
+
+.chart-content {
+  flex: 1;
+  padding: 1rem;
+  overflow: auto;
+}
+
+.chart-empty {
+  display: flex;
+  height: 100%;
+  justify-content: center;
+  align-items: center;
+  color: var(--text-secondary);
+}
+
 /* Button styles */
 button {
   padding: 0.35rem 0.75rem;
@@ -328,6 +487,10 @@ button.icon-button svg {
   color: var(--toolbar-icon);
 }
 
+button.icon-button.active {
+  background-color: var(--primary-light);
+}
+
 .file-input {
   display: none;
 }
@@ -339,6 +502,81 @@ button.icon-button svg {
 .align-left { text-align: left; }
 .align-center { text-align: center; }
 .align-right { text-align: right; }
+
+/* Cell border styles */
+.border-all {
+  border: 1px solid var(--text-color) !important;
+}
+
+.border-top {
+  border-top: 1px solid var(--text-color) !important;
+}
+
+.border-right {
+  border-right: 1px solid var(--text-color) !important;
+}
+
+.border-bottom {
+  border-bottom: 1px solid var(--text-color) !important;
+}
+
+.border-left {
+  border-left: 1px solid var(--text-color) !important;
+}
+
+/* Tooltip */
+.tooltip {
+  position: relative;
+}
+
+.tooltip::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: -30px;
+  left: 50%;
+  transform: translateX(-50%);
+  background-color: rgba(0, 0, 0, 0.8);
+  color: white;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  white-space: nowrap;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.2s, visibility 0.2s;
+  pointer-events: none;
+  z-index: 1000;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+}
+
+.tooltip:hover::after {
+  opacity: 1;
+  visibility: visible;
+}
+
+/* For dark mode */
+[data-theme="dark"] .tooltip::after {
+  background-color: rgba(255, 255, 255, 0.9);
+  color: #202124;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.4);
+}
+
+/* Data validation styles */
+.cell-invalid {
+  position: relative;
+}
+
+.cell-invalid::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 0;
+  height: 0;
+  border-style: solid;
+  border-width: 0 8px 8px 0;
+  border-color: transparent var(--danger-color) transparent transparent;
+}
 
 /* Scrollbar styling */
 ::-webkit-scrollbar {
@@ -392,4 +630,35 @@ button.icon-button svg {
 @keyframes spin {
   0% { transform: rotate(0deg); }
   100% { transform: rotate(360deg); }
+}
+
+/* Responsive styles for mobile devices */
+@media (max-width: 768px) {
+  .toolbar {
+    padding: 0.25rem;
+    gap: 0.2rem;
+  }
+  
+  .toolbar-divider {
+    margin: 0 0.1rem;
+  }
+  
+  button.icon-button {
+    width: 28px;
+    height: 28px;
+  }
+  
+  .formula-bar {
+    padding: 0.25rem;
+  }
+  
+  .cell-address {
+    min-width: 40px;
+    padding: 0.25rem;
+  }
+  
+  .status-bar-item {
+    margin-right: 8px;
+    font-size: 0.7rem;
+  }
 }

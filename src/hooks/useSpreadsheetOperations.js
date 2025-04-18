@@ -1,11 +1,15 @@
+// src/hooks/useSpreadsheetOperations.js
 import { useCallback, useEffect, useState } from 'react'
 import { useSpreadsheet } from '../context/SpreadsheetContext'
-import { FormulaParser } from '../utils/formulaParser'
+import { FormulaParser } from '../utils/FormulaParser'
+import { formatValue, NumberFormats } from '../utils/numberFormatter'
 import { copyCells, cutCells, pasteCells, parseClipboardText } from '../utils/clipboardActions'
 import { saveToLocalStorage, loadFromLocalStorage, exportToCsv, downloadCsv, importFromCsv } from '../utils/dataHelpers'
+import { sortRange, sortColumn, SortType, filterRange, FilterType } from '../utils/sortAndFilter'
+import { getCellIndices, getCellId } from '../utils/cellHelpers'
 
 /**
- * Custom hook for spreadsheet operations
+ * Enhanced custom hook for spreadsheet operations
  * @returns {Object} Object containing spreadsheet operations
  */
 function useSpreadsheetOperations() {
@@ -13,7 +17,7 @@ function useSpreadsheetOperations() {
   const [formulaParser, setFormulaParser] = useState(null)
   const [dependencies, setDependencies] = useState({})
   
-  // Initialize the formula parser
+  // Initialize the enhanced formula parser
   useEffect(() => {
     setFormulaParser(new FormulaParser(getCellValue))
   }, [getCellValue])
@@ -175,6 +179,28 @@ function useSpreadsheetOperations() {
   }, [state.activeCell, state.formulaBarValue, updateCellValue])
   
   /**
+   * Applies number format to selected cells
+   * @param {string} format - The number format to apply
+   * @param {Object} options - Format options
+   */
+  const applyNumberFormat = useCallback((format, options = {}) => {
+    const cellIds = state.selectedCells.length > 0 ? state.selectedCells : [state.activeCell]
+    
+    if (cellIds[0]) {
+      dispatch({
+        type: ActionTypes.FORMAT_CELLS,
+        payload: {
+          cellIds,
+          formatting: {
+            numberFormat: format,
+            formatOptions: options
+          }
+        }
+      })
+    }
+  }, [dispatch, ActionTypes.FORMAT_CELLS, state.selectedCells, state.activeCell])
+  
+  /**
    * Handles keyboard navigation
    * @param {string} direction - 'up', 'down', 'left', 'right', 'tab'
    * @param {string} currentCellId - Current cell ID
@@ -183,50 +209,32 @@ function useSpreadsheetOperations() {
   const navigateWithKeyboard = useCallback((direction, currentCellId) => {
     if (!currentCellId) return null
     
-    const [col, row] = currentCellId.match(/([A-Z]+)(\d+)/).slice(1)
-    let colIndex = 0
+    const [col, row] = getCellIndices(currentCellId)
     
-    // Convert column letters to index
-    for (let i = 0; i < col.length; i++) {
-      colIndex = colIndex * 26 + (col.charCodeAt(i) - 64)
-    }
-    colIndex--
-    
-    const rowIndex = parseInt(row) - 1
     const activeSheet = getActiveSheet()
     
-    let newCol = colIndex
-    let newRow = rowIndex
+    let newCol = col
+    let newRow = row
     
     switch (direction) {
       case 'up':
-        newRow = Math.max(0, rowIndex - 1)
+        newRow = Math.max(0, row - 1)
         break
       case 'down':
-        newRow = Math.min(activeSheet.maxRow - 1, rowIndex + 1)
+        newRow = Math.min(activeSheet.maxRow - 1, row + 1)
         break
       case 'left':
-        newCol = Math.max(0, colIndex - 1)
+        newCol = Math.max(0, col - 1)
         break
       case 'right':
       case 'tab':
-        newCol = Math.min(activeSheet.maxCol - 1, colIndex + 1)
+        newCol = Math.min(activeSheet.maxCol - 1, col + 1)
         break
       default:
         break
     }
     
-    // Convert back to cell ID
-    let newColStr = ''
-    let temp = newCol + 1
-    
-    while (temp > 0) {
-      const remainder = (temp - 1) % 26
-      newColStr = String.fromCharCode(65 + remainder) + newColStr
-      temp = Math.floor((temp - 1) / 26)
-    }
-    
-    const newCellId = `${newColStr}${newRow + 1}`
+    const newCellId = getCellId(newCol, newRow)
     return newCellId
   }, [getActiveSheet])
   
@@ -314,6 +322,92 @@ function useSpreadsheetOperations() {
   }, [dispatch, ActionTypes.CLEAR_CELLS, state.selectedCells, state.activeCell])
   
   /**
+   * Sorts selected cells
+   * @param {string} direction - Sort direction ('asc' or 'desc')
+   */
+  const sortSelectedCells = useCallback((direction = 'asc') => {
+    if (state.selectedCells.length <= 1 && !state.activeCell) return
+    
+    const activeSheet = getActiveSheet()
+    if (!activeSheet || !activeSheet.cells) return
+    
+    let startCol, startRow, endCol, endRow
+    
+    // Determine sort range
+    if (state.selectedCells.length > 1) {
+      // Get bounds of selection
+      let minCol = Infinity, maxCol = -Infinity, minRow = Infinity, maxRow = -Infinity
+      
+      state.selectedCells.forEach(cellId => {
+        const [col, row] = getCellIndices(cellId)
+        minCol = Math.min(minCol, col)
+        maxCol = Math.max(maxCol, col)
+        minRow = Math.min(minRow, row)
+        maxRow = Math.max(maxRow, row)
+      })
+      
+      startCol = minCol
+      startRow = minRow
+      endCol = maxCol
+      endRow = maxRow
+    } else {
+      // Use active cell column
+      const [col, row] = getCellIndices(state.activeCell)
+      
+      // Find data range in this column
+      startCol = col
+      endCol = col
+      
+      // Find start and end rows with data
+      let r = 0
+      while (r < activeSheet.maxRow) {
+        const cellId = getCellId(col, r)
+        if (activeSheet.cells[cellId] && activeSheet.cells[cellId].value) {
+          startRow = r
+          break
+        }
+        r++
+      }
+      
+      r = activeSheet.maxRow - 1
+      while (r >= 0) {
+        const cellId = getCellId(col, r)
+        if (activeSheet.cells[cellId] && activeSheet.cells[cellId].value) {
+          endRow = r
+          break
+        }
+        r--
+      }
+    }
+    
+    // Check if we found a valid range
+    if (startCol === undefined || startRow === undefined || startCol > endCol || startRow > endRow) {
+      return
+    }
+    
+    // Perform sort
+    const sortResults = sortRange(
+      activeSheet.cells,
+      startCol,
+      startRow,
+      endCol,
+      endRow,
+      startCol, // Sort by first column in selection
+      direction === 'asc' ? SortType.ASCENDING : SortType.DESCENDING
+    )
+    
+    // Apply updates
+    if (sortResults.updates && sortResults.updates.length > 0) {
+      dispatch({
+        type: ActionTypes.BULK_UPDATE_CELLS,
+        payload: {
+          updates: sortResults.updates
+        }
+      })
+    }
+  }, [state.selectedCells, state.activeCell, getActiveSheet, dispatch, ActionTypes.BULK_UPDATE_CELLS])
+  
+  /**
    * Adds a new sheet
    */
   const addSheet = useCallback(() => {
@@ -321,10 +415,14 @@ function useSpreadsheetOperations() {
   }, [dispatch, ActionTypes.ADD_SHEET])
   
   /**
-   * Deletes the active sheet
+   * Deletes a sheet
+   * @param {string} sheetId - Sheet ID to delete
    */
-  const deleteSheet = useCallback(() => {
-    dispatch({ type: ActionTypes.DELETE_SHEET })
+  const deleteSheet = useCallback((sheetId) => {
+    dispatch({ 
+      type: ActionTypes.DELETE_SHEET,
+      payload: { sheetId }
+    })
   }, [dispatch, ActionTypes.DELETE_SHEET])
   
   /**
@@ -422,6 +520,228 @@ function useSpreadsheetOperations() {
     dispatch({ type: ActionTypes.REDO })
   }, [dispatch, ActionTypes.REDO])
   
+  /**
+   * Adds data validation to cells
+   * @param {Array} cellIds - Array of cell IDs
+   * @param {Object} validationRule - Validation rule
+   */
+  const addDataValidation = useCallback((cellIds, validationRule) => {
+    if (!cellIds || cellIds.length === 0) return
+    
+    dispatch({
+      type: ActionTypes.FORMAT_CELLS,
+      payload: {
+        cellIds,
+        formatting: {
+          dataValidation: validationRule
+        }
+      }
+    })
+  }, [dispatch, ActionTypes.FORMAT_CELLS])
+  
+  /**
+   * Inserts rows at the specified position
+   * @param {number} rowIndex - Row index to insert at
+   * @param {number} count - Number of rows to insert
+   */
+  const insertRows = useCallback((rowIndex, count = 1) => {
+    dispatch({
+      type: ActionTypes.INSERT_ROWS,
+      payload: { rowIndex, count }
+    })
+  }, [dispatch, ActionTypes.INSERT_ROWS])
+  
+  /**
+   * Inserts columns at the specified position
+   * @param {number} colIndex - Column index to insert at
+   * @param {number} count - Number of columns to insert
+   */
+  const insertColumns = useCallback((colIndex, count = 1) => {
+    dispatch({
+      type: ActionTypes.INSERT_COLUMNS,
+      payload: { colIndex, count }
+    })
+  }, [dispatch, ActionTypes.INSERT_COLUMNS])
+  
+  /**
+   * Deletes rows at the specified position
+   * @param {number} rowIndex - Starting row index to delete
+   * @param {number} count - Number of rows to delete
+   */
+  const deleteRows = useCallback((rowIndex, count = 1) => {
+    dispatch({
+      type: ActionTypes.DELETE_ROWS,
+      payload: { rowIndex, count }
+    })
+  }, [dispatch, ActionTypes.DELETE_ROWS])
+  
+  /**
+   * Deletes columns at the specified position
+   * @param {number} colIndex - Starting column index to delete
+   * @param {number} count - Number of columns to delete
+   */
+  const deleteColumns = useCallback((colIndex, count = 1) => {
+    dispatch({
+      type: ActionTypes.DELETE_COLUMNS,
+      payload: { colIndex, count }
+    })
+  }, [dispatch, ActionTypes.DELETE_COLUMNS])
+  
+  /**
+   * Freezes rows or columns
+   * @param {number} rowCount - Number of rows to freeze
+   * @param {number} colCount - Number of columns to freeze
+   */
+  const freezePanes = useCallback((rowCount = 0, colCount = 0) => {
+    dispatch({
+      type: ActionTypes.FREEZE_PANES,
+      payload: { rowCount, colCount }
+    })
+  }, [dispatch, ActionTypes.FREEZE_PANES])
+  
+  /**
+   * Searches for a value in the active sheet
+   * @param {string} searchText - Text to search for
+   * @param {boolean} matchCase - Whether to match case
+   * @param {boolean} exactMatch - Whether to require exact matches
+   * @returns {Array} - Array of cell IDs that match the search
+   */
+  const searchSheet = useCallback((searchText, matchCase = false, exactMatch = false) => {
+    if (!searchText) return []
+    
+    const activeSheet = getActiveSheet()
+    if (!activeSheet || !activeSheet.cells) return []
+    
+    const results = []
+    
+    for (const cellId in activeSheet.cells) {
+      const cellData = activeSheet.cells[cellId]
+      
+      if (!cellData.value && !cellData.formula) continue
+      
+      const value = String(cellData.value || '')
+      let isMatch = false
+      
+      if (exactMatch) {
+        isMatch = matchCase 
+          ? value === searchText 
+          : value.toLowerCase() === searchText.toLowerCase()
+      } else {
+        isMatch = matchCase 
+          ? value.includes(searchText) 
+          : value.toLowerCase().includes(searchText.toLowerCase())
+      }
+      
+      if (isMatch) {
+        results.push(cellId)
+      }
+    }
+    
+    return results
+  }, [getActiveSheet])
+  
+  /**
+   * Creates a data visualization from selected data
+   * @param {string} chartType - Type of chart to create
+   * @param {Object} options - Chart options
+   */
+  const createChart = useCallback((chartType, options = {}) => {
+    if (state.selectedCells.length <= 1 && !state.activeCell) return null
+    
+    const activeSheet = getActiveSheet()
+    if (!activeSheet || !activeSheet.cells) return null
+    
+    // Determine data range
+    let minCol = Infinity, maxCol = -Infinity, minRow = Infinity, maxRow = -Infinity
+    
+    const cellsToInclude = state.selectedCells.length > 0 
+      ? state.selectedCells 
+      : [state.activeCell]
+    
+    cellsToInclude.forEach(cellId => {
+      const [col, row] = getCellIndices(cellId)
+      minCol = Math.min(minCol, col)
+      maxCol = Math.max(maxCol, col)
+      minRow = Math.min(minRow, row)
+      maxRow = Math.max(maxRow, row)
+    })
+    
+    // Extract data from range
+    const chartData = {
+      labels: [],
+      datasets: []
+    }
+    
+    // Decide how to extract data based on selection shape
+    const isMultiRow = maxRow > minRow
+    const isMultiColumn = maxCol > minCol
+    
+    if (isMultiRow && isMultiColumn) {
+      // 2D selection - first row as labels, each column as dataset
+      // Get labels from first row
+      for (let col = minCol; col <= maxCol; col++) {
+        const cellId = getCellId(col, minRow)
+        chartData.labels.push(activeSheet.cells[cellId]?.value || '')
+      }
+      
+      // Get datasets from remaining rows
+      for (let row = minRow + 1; row <= maxRow; row++) {
+        const dataset = {
+          label: activeSheet.cells[getCellId(minCol, row)]?.value || `Series ${row - minRow}`,
+          data: []
+        }
+        
+        for (let col = minCol + 1; col <= maxCol; col++) {
+          const cellId = getCellId(col, row)
+          const value = activeSheet.cells[cellId]?.value || 0
+          dataset.data.push(parseFloat(value) || 0)
+        }
+        
+        chartData.datasets.push(dataset)
+      }
+    } else if (isMultiRow) {
+      // Single column selection - use as one dataset
+      const dataset = {
+        label: activeSheet.cells[getCellId(minCol, minRow)]?.value || 'Series 1',
+        data: []
+      }
+      
+      for (let row = minRow + 1; row <= maxRow; row++) {
+        const cellId = getCellId(minCol, row)
+        const rowLabel = activeSheet.cells[getCellId(minCol - 1, row)]?.value || `Item ${row}`
+        chartData.labels.push(rowLabel)
+        
+        const value = activeSheet.cells[cellId]?.value || 0
+        dataset.data.push(parseFloat(value) || 0)
+      }
+      
+      chartData.datasets.push(dataset)
+    } else {
+      // Single row selection - use as one dataset
+      const dataset = {
+        label: activeSheet.cells[getCellId(minCol, minRow - 1)]?.value || 'Series 1',
+        data: []
+      }
+      
+      for (let col = minCol; col <= maxCol; col++) {
+        const cellId = getCellId(col, minRow)
+        const colLabel = activeSheet.cells[getCellId(col, minRow - 1)]?.value || `Item ${col}`
+        chartData.labels.push(colLabel)
+        
+        const value = activeSheet.cells[cellId]?.value || 0
+        dataset.data.push(parseFloat(value) || 0)
+      }
+      
+      chartData.datasets.push(dataset)
+    }
+    
+    return {
+      type: chartType,
+      data: chartData,
+      options
+    }
+  }, [state.selectedCells, state.activeCell, getActiveSheet])
+  
   return {
     setActiveCell,
     selectCells,
@@ -430,10 +750,12 @@ function useSpreadsheetOperations() {
     applyFormulaBar,
     navigateWithKeyboard,
     formatCells,
+    applyNumberFormat,
     copySelectedCells,
     cutSelectedCells,
     pasteToCell,
     clearSelectedCells,
+    sortSelectedCells,
     addSheet,
     deleteSheet,
     renameSheet,
@@ -444,8 +766,16 @@ function useSpreadsheetOperations() {
     resizeRow,
     undo,
     redo,
-    canUndo: state.undoStack.length > 0,
-    canRedo: state.redoStack.length > 0
+    addDataValidation,
+    insertRows,
+    insertColumns,
+    deleteRows,
+    deleteColumns,
+    freezePanes,
+    searchSheet,
+    createChart,
+    canUndo: state.undoStack?.length > 0,
+    canRedo: state.redoStack?.length > 0
   }
 }
 

@@ -1,16 +1,20 @@
+// src/App.jsx
 import { useState, useEffect } from 'react'
 import { SpreadsheetProvider } from './context/SpreadsheetContext'
 import FormulaBar from './components/FormulaBar'
-import CanvasGrid from './components/CanvasGrid' // Changed from Grid to CanvasGrid
+import CanvasGrid from './components/CanvasGrid'
 import SheetTabs from './components/SheetTabs'
 import Toolbar from './components/Toolbar'
+import StatusBar from './components/StatusBar'
 import ContextMenu from './components/ContextMenu'
+import Chart from './components/Chart'
 
 function App() {
   const [theme, setTheme] = useState('light')
   const [contextMenu, setContextMenu] = useState({ visible: false, x: 0, y: 0 })
   const [isLoading, setIsLoading] = useState(true)
-
+  const [chartData, setChartData] = useState(null)
+  
   // Handle theme toggle
   const toggleTheme = () => {
     const newTheme = theme === 'light' ? 'dark' : 'light'
@@ -52,6 +56,18 @@ function App() {
     return () => document.removeEventListener('click', handleClickOutside)
   }, [contextMenu.visible])
 
+  // Close chart when escape key is pressed
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape' && chartData) {
+        setChartData(null)
+      }
+    }
+    
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [chartData])
+
   // Moon and sun icons for theme toggle
   const MoonIcon = () => (
     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -72,6 +88,11 @@ function App() {
       <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
     </svg>
   )
+  
+  // Handle chart close
+  const handleChartClose = () => {
+    setChartData(null)
+  }
 
   return (
     <div className="app">
@@ -97,9 +118,24 @@ function App() {
           </div>
         ) : (
           <div className="spreadsheet-container">
-            <Toolbar />
+            <Toolbar onCreateChart={(data) => setChartData(data)} />
             <FormulaBar />
-            <CanvasGrid setContextMenu={setContextMenu} /> {/* Changed from Grid to CanvasGrid */}
+            
+            <div className="main-content">
+              {chartData && (
+                <div className="chart-overlay">
+                  <Chart 
+                    type={chartData.type} 
+                    data={chartData.data} 
+                    options={chartData.options} 
+                    onClose={handleChartClose} 
+                  />
+                </div>
+              )}
+              <CanvasGrid setContextMenu={setContextMenu} />
+            </div>
+            
+            <StatusBar />
             <SheetTabs />
           </div>
         )}
